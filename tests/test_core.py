@@ -1,7 +1,7 @@
 import numpy as np
 import pandas as pd
-from src.tostao_supply_chain.forecasting import build_daily_panel, forecast_one_series
-from src.tostao_supply_chain.uncertainty import simulate_demand
+from tostao_supply_chain.forecasting import build_daily_panel, forecast_one_series
+from tostao_supply_chain.uncertainty import simulate_demand
 
 def test_build_daily_panel_fills_missing_days():
     sales = pd.DataFrame({
