@@ -1,0 +1,13 @@
+control,aprobado,estado
+5 archivos de entrada presentes,True,OK
+160 combinaciones SKU-tienda,True,OK
+480 errores semanales ETS,True,OK
+Q90 contiene 160 combinaciones,True,OK
+156 combinaciones con pedido,True,OK
+Notebook 04 coincide con pipeline,True,OK
+Pronóstico diario suma el semanal,True,OK
+Stock recomendado coincide con fuente,True,OK
+Pedido no negativo,True,OK
+Pedido = objetivo menos stock,True,OK
+3 políticas por combinación,True,OK
+Sin fallback ETS,True,OK

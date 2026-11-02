@@ -1,0 +1,5 @@
+origen,pedido_Q90,estado,nota
+Notebook 04 — resumen reportado anteriormente,13805,NO REPRODUCIBLE CON INSUMOS ACTUALES,El resumen previo no tiene salidas detalladas conservadas.
+Snapshot anterior del proyecto 07,13972,SNAPSHOT ANTERIOR,Difiere de la ejecución actual; no se conserva el entorno/código exacto que lo produjo.
+Notebook 04 reproducido con insumos actuales,13981,REPRODUCIDO,"Misma semilla, errores ETS, forecast semanal y política Q90."
+Pipeline 07 ejecutado con insumos actuales,13981,REPRODUCIDO,Coincide exactamente con la reproducción independiente de Notebook 04.
