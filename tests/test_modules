@@ -1,0 +1,424 @@
+import numpy as np
+import pandas as pd
+import pytest
+
+from tostao_supply_chain.config import PipelineConfig
+from tostao_supply_chain import forecasting, pipeline
+from tostao_supply_chain.data_validation import (
+    validate_inputs,
+    _require_columns,
+)
+from tostao_supply_chain.forecasting import (
+    build_daily_panel,
+    forecast_one_series,
+    forecast_all,
+)
+from tostao_supply_chain.uncertainty import (
+    build_weekly_errors,
+    simulate_demand,
+    create_demand_scenarios,
+)
+from tostao_supply_chain.inventory_policy import recommend_inventory
+
+
+# ---------------------------------------------------------
+# FIXTURES
+# ---------------------------------------------------------
+
+@pytest.fixture
+def valid_data():
+    return {
+        "sales": pd.DataFrame({
+            "fecha": ["2024-01-01", "2024-01-02"],
+            "id_tienda": ["S1", "S1"],
+            "id_producto": ["P1", "P1"],
+            "unidades_vendidas": [10, 12],
+        }),
+        "inventory": pd.DataFrame({
+            "id_tienda": ["S1"],
+            "id_producto": ["P1"],
+            "stock_actual": [20],
+        }),
+        "products": pd.DataFrame({
+            "id_producto": ["P1"],
+            "costo_unitario": [5],
+            "precio_venta": [10],
+            "costo_almacenamiento_semanal": [1],
+        }),
+        "stores": pd.DataFrame({
+            "id_tienda": ["S1"],
+            "ciudad": ["Bogotá"],
+            "tamaño_m2": [100],
+        }),
+        "backtest": pd.DataFrame({
+            "id_tienda": ["S1"],
+            "id_producto": ["P1"],
+            "fecha": ["2024-01-01"],
+            "y": [10],
+            "pred": [9],
+            "modelo": ["ETS_Aditivo_7"],
+            "fold": [1],
+        }),
+    }
+
+
+@pytest.fixture
+def weekly_forecast():
+    return pd.DataFrame({
+        "id_tienda": ["S1"],
+        "id_producto": ["P1"],
+        "demanda_pronosticada_7d": [70.0],
+    })
+
+
+@pytest.fixture
+def inventory():
+    return pd.DataFrame({
+        "id_tienda": ["S1"],
+        "id_producto": ["P1"],
+        "stock_actual": [20],
+    })
+
+
+@pytest.fixture
+def products():
+    return pd.DataFrame({
+        "id_producto": ["P1"],
+        "costo_unitario": [5.0],
+        "precio_venta": [10.0],
+        "costo_almacenamiento_semanal": [1.0],
+    })
+
+
+# ---------------------------------------------------------
+# CONFIG
+# ---------------------------------------------------------
+
+def test_pipeline_config_defaults():
+    config = PipelineConfig()
+
+    assert config.horizon_days == 7
+    assert config.safety_days == 1
+    assert config.default_service_level == 0.90
+    assert config.max_coverage_days == 8
+
+
+# ---------------------------------------------------------
+# DATA VALIDATION
+# ---------------------------------------------------------
+
+def test_validate_inputs_accepts_valid_data(valid_data):
+    result = validate_inputs(valid_data)
+
+    assert len(result["sales"]) == 2
+    assert result["sales"]["fecha"].notna().all()
+    assert result["inventory"]["stock_actual"].iloc[0] == 20
+
+
+def test_validate_inputs_aggregates_duplicate_daily_sales(valid_data):
+    valid_data["sales"] = pd.concat([
+        valid_data["sales"],
+        valid_data["sales"].iloc[[0]],
+    ], ignore_index=True)
+
+    result = validate_inputs(valid_data)
+
+    sales_day = result["sales"].query(
+        "fecha == '2024-01-01'"
+    )
+
+    assert len(sales_day) == 1
+    assert sales_day["unidades_vendidas"].iloc[0] == 20
+
+
+def test_validate_inputs_rejects_negative_sales(valid_data):
+    valid_data["sales"].loc[0, "unidades_vendidas"] = -5
+
+    with pytest.raises(ValueError, match="nulos o negativos"):
+        validate_inputs(valid_data)
+
+
+def test_validate_inputs_rejects_negative_inventory(valid_data):
+    valid_data["inventory"].loc[0, "stock_actual"] = -1
+
+    with pytest.raises(ValueError, match="Inventario"):
+        validate_inputs(valid_data)
+
+
+def test_validate_inputs_rejects_duplicate_inventory(valid_data):
+    valid_data["inventory"] = pd.concat([
+        valid_data["inventory"],
+        valid_data["inventory"],
+    ], ignore_index=True)
+
+    with pytest.raises(ValueError, match="llaves duplicadas"):
+        validate_inputs(valid_data)
+
+
+def test_validate_inputs_rejects_invalid_dates(valid_data):
+    valid_data["sales"].loc[0, "fecha"] = "fecha_invalida"
+
+    with pytest.raises(ValueError, match="fechas inválidas"):
+        validate_inputs(valid_data)
+
+
+def test_validate_inputs_rejects_incomplete_inventory_keys(valid_data):
+    valid_data["inventory"].loc[0, "id_producto"] = "P2"
+
+    with pytest.raises(ValueError, match="llaves ventas/inventario"):
+        validate_inputs(valid_data)
+
+
+def test_require_columns_detects_missing_columns():
+    frame = pd.DataFrame({"id_tienda": ["S1"]})
+
+    with pytest.raises(ValueError, match="Faltan columnas"):
+        _require_columns(frame, ["id_tienda", "id_producto"], "prueba")
+
+
+# ---------------------------------------------------------
+# FORECASTING
+# ---------------------------------------------------------
+
+def test_forecast_rejects_short_series():
+    with pytest.raises(ValueError, match="28 días"):
+        forecast_one_series([1, 2, 3], steps=7)
+
+
+def test_forecast_returns_nonnegative_values():
+    values = np.tile([2, 3, 4, 5, 6, 7, 8], 8)
+
+    prediction, model = forecast_one_series(values, steps=7)
+
+    assert len(prediction) == 7
+    assert np.isfinite(prediction).all()
+    assert (prediction >= 0).all()
+    assert model in {
+        "ETS_Aditivo_7",
+        "Seasonal_Naive_7_fallback",
+    }
+
+
+def test_forecast_uses_fallback_when_ets_fails(monkeypatch):
+    class BrokenETS:
+        def __init__(self, *args, **kwargs):
+            raise ValueError("Error controlado de prueba")
+
+    monkeypatch.setattr(
+        forecasting,
+        "ExponentialSmoothing",
+        BrokenETS,
+    )
+
+    values = np.tile([1, 2, 3, 4, 5, 6, 7], 5)
+
+    prediction, model = forecast_one_series(values, steps=7)
+
+    assert model == "Seasonal_Naive_7_fallback"
+    np.testing.assert_array_equal(
+        prediction,
+        np.array([1, 2, 3, 4, 5, 6, 7], dtype=float),
+    )
+
+
+def test_forecast_all_creates_daily_and_weekly_outputs(monkeypatch):
+    dates = pd.date_range("2024-01-01", periods=28, freq="D")
+
+    panel = pd.DataFrame({
+        "fecha": list(dates),
+        "id_tienda": ["S1"] * 28,
+        "id_producto": ["P1"] * 28,
+        "y": [5.0] * 28,
+    })
+
+    monkeypatch.setattr(
+        forecasting,
+        "forecast_one_series",
+        lambda values, steps: (
+            np.repeat(5.0, steps),
+            "ETS_Aditivo_7",
+        ),
+    )
+
+    daily, weekly = forecast_all(panel, horizon_days=7)
+
+    assert len(daily) == 7
+    assert len(weekly) == 1
+    assert weekly["demanda_pronosticada_7d"].iloc[0] == 35.0
+
+
+# ---------------------------------------------------------
+# UNCERTAINTY
+# ---------------------------------------------------------
+
+def test_build_weekly_errors_calculates_error():
+    backtest = pd.DataFrame({
+        "id_tienda": ["S1", "S1"],
+        "id_producto": ["P1", "P1"],
+        "fold": [1, 1],
+        "fecha": pd.to_datetime(["2024-01-01", "2024-01-02"]),
+        "y": [10, 12],
+        "pred": [8, 10],
+        "modelo": ["ETS_Aditivo_7", "ETS_Aditivo_7"],
+    })
+
+    result = build_weekly_errors(backtest)
+
+    assert len(result) == 1
+    assert result["demanda_real"].iloc[0] == 22
+    assert result["demanda_predicha"].iloc[0] == 18
+    assert result["error"].iloc[0] == 4
+
+
+def test_build_weekly_errors_rejects_missing_model():
+    backtest = pd.DataFrame({
+        "modelo": ["Otro_Modelo"],
+    })
+
+    with pytest.raises(ValueError, match="No hay observaciones"):
+        build_weekly_errors(backtest)
+
+
+def test_simulate_demand_is_reproducible():
+    residuals = np.array([-0.2, 0.0, 0.2])
+
+    first = simulate_demand(100, residuals, 500, seed=42)
+    second = simulate_demand(100, residuals, 500, seed=42)
+
+    np.testing.assert_array_equal(first, second)
+    assert len(first) == 500
+    assert (first >= 0).all()
+
+
+def test_simulate_demand_rejects_empty_residuals():
+    with pytest.raises(ValueError, match="residuos suficientes"):
+        simulate_demand(100, [], 100)
+
+
+def test_create_scenarios_uses_global_pool_when_product_pool_is_small():
+    weekly = pd.DataFrame({
+        "id_tienda": ["S1"],
+        "id_producto": ["P1"],
+        "demanda_pronosticada_7d": [100.0],
+    })
+
+    errors = pd.DataFrame({
+        "id_tienda": ["S1"] * 10,
+        "id_producto": ["P2"] * 10,
+        "error_relativo": np.linspace(-0.2, 0.2, 10),
+    })
+
+    distribution, cache = create_demand_scenarios(
+        weekly,
+        errors,
+        n_simulations=100,
+        min_product_errors=30,
+        seed=42,
+    )
+
+    assert distribution["fuente_residuos"].iloc[0] == "global"
+    assert len(cache[("S1", "P1")]) == 100
+    assert (cache[("S1", "P1")] >= 0).all()
+
+
+def test_create_scenarios_rejects_insufficient_global_errors():
+    weekly = pd.DataFrame({
+        "id_tienda": ["S1"],
+        "id_producto": ["P1"],
+        "demanda_pronosticada_7d": [100.0],
+    })
+
+    errors = pd.DataFrame({
+        "id_producto": ["P1"] * 5,
+        "error_relativo": [0.1] * 5,
+    })
+
+    with pytest.raises(ValueError, match="al menos 10 errores"):
+        create_demand_scenarios(weekly, errors)
+
+
+# ---------------------------------------------------------
+# INVENTORY POLICY
+# ---------------------------------------------------------
+
+def test_inventory_policy_generates_q85_q90_q95(
+    weekly_forecast, inventory, products
+):
+    scenarios = np.linspace(50, 100, 100)
+    cache = {("S1", "P1"): scenarios}
+
+    recommendations, comparison, summary = recommend_inventory(
+        weekly_forecast,
+        inventory,
+        products,
+        cache,
+    )
+
+    assert set(comparison["politica"]) == {"Q85", "Q90", "Q95"}
+    assert len(recommendations) == 1
+    assert len(summary) == 3
+
+
+def test_inventory_policy_never_recommends_negative_order(
+    weekly_forecast, products
+):
+    enough_inventory = pd.DataFrame({
+        "id_tienda": ["S1"],
+        "id_producto": ["P1"],
+        "stock_actual": [500],
+    })
+
+    cache = {
+        ("S1", "P1"): np.repeat(70.0, 100)
+    }
+
+    recommendations, _, _ = recommend_inventory(
+        weekly_forecast,
+        enough_inventory,
+        products,
+        cache,
+    )
+
+    assert recommendations["pedido_sugerido"].iloc[0] == 0
+
+
+def test_inventory_policy_applies_coverage_cap(
+    weekly_forecast, inventory, products
+):
+    cache = {
+        ("S1", "P1"): np.repeat(200.0, 100)
+    }
+
+    recommendations, _, _ = recommend_inventory(
+        weekly_forecast,
+        inventory,
+        products,
+        cache,
+    )
+
+    row = recommendations.iloc[0]
+
+    assert row["tope_cobertura"] == 80
+    assert row["inventario_objetivo"] == 80
+    assert row["pedido_sugerido"] == 60
+
+
+def test_inventory_policy_rejects_missing_inventory(
+    weekly_forecast, products
+):
+    empty_inventory = pd.DataFrame({
+        "id_tienda": ["S2"],
+        "id_producto": ["P1"],
+        "stock_actual": [10],
+    })
+
+    cache = {("S1", "P1"): np.repeat(70.0, 100)}
+
+    with pytest.raises(ValueError, match="sin inventario"):
+        recommend_inventory(
+            weekly_forecast,
+            empty_inventory,
+            products,
+            cache,
+        )
+PY
