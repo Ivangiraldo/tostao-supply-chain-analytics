@@ -19,12 +19,49 @@ st.set_page_config(
 
 st.markdown("""
 <style>
-.block-container {padding-top: 1.5rem; padding-bottom: 2rem;}
-[data-testid="stMetric"] {
-    background: #f7f8f5; border: 1px solid #e8ebe4;
-    padding: 14px 16px; border-radius: 12px;
+:root {
+    --tostao-yellow: #F2B600;
+    --tostao-yellow-soft: #FFF4CC;
+    --tostao-charcoal: #171717;
+    --tostao-cream: #F8F6F0;
+    --tostao-white: #FFFFFF;
 }
-div[data-testid="stMetricValue"] {font-size: 1.65rem;}
+.stApp { background: var(--tostao-cream); }
+.block-container {padding-top: 1.6rem; padding-bottom: 2.2rem;}
+[data-testid="stSidebar"] {
+    background: var(--tostao-charcoal);
+}
+[data-testid="stSidebar"] * {
+    color: #FFFFFF;
+}
+[data-testid="stSidebar"] [data-testid="stRadio"] label {
+    color: #FFFFFF;
+}
+[data-testid="stMetric"] {
+    background: var(--tostao-white);
+    border: 1px solid #E8E2D5;
+    border-left: 4px solid var(--tostao-yellow);
+    padding: 14px 16px;
+    border-radius: 10px;
+}
+div[data-testid="stMetricValue"] {font-size: 1.65rem; color: var(--tostao-charcoal);}
+h1, h2, h3 { color: var(--tostao-charcoal); }
+.stButton > button, .stDownloadButton > button {
+    background: var(--tostao-yellow);
+    color: var(--tostao-charcoal);
+    border: 1px solid var(--tostao-yellow);
+    border-radius: 8px;
+    font-weight: 650;
+}
+.stButton > button:hover, .stDownloadButton > button:hover {
+    background: #DDA600;
+    color: #111111;
+    border-color: #DDA600;
+}
+[data-testid="stDataFrame"] {
+    border: 1px solid #E8E2D5;
+    border-radius: 10px;
+}
 .small-muted {color: #6b7280; font-size: .88rem;}
 </style>
 """, unsafe_allow_html=True)
@@ -83,8 +120,14 @@ demand_forecast = float(weekly["demanda_pronosticada_7d"].sum())
 stock_total = float(inventory["stock_actual"].sum())
 expected_cost = float(rec90["costo_esperado_estimado"].sum())
 
-st.sidebar.title("☕ Tostao")
-st.sidebar.caption("Supply Chain Intelligence")
+logo_path = ROOT / "app" / "assets" / "logo_tostao.jpg"
+if logo_path.exists():
+    st.sidebar.image(str(logo_path), use_container_width=True)
+st.sidebar.markdown(
+    "<div style='text-align:center;color:#F2B600;font-weight:700;"
+    "letter-spacing:.08em;margin:0.2rem 0 1rem 0;'>SUPPLY CHAIN INTELLIGENCE</div>",
+    unsafe_allow_html=True,
+)
 page = st.sidebar.radio(
     "Navegación",
     ["Resumen ejecutivo", "Recomendaciones", "Pronóstico de demanda", "Comparador de políticas", "Datos y metodología"],
@@ -294,4 +337,3 @@ elif page == "Datos y metodología":
         "Valor":["7 días","Q90","8 días","ETS aditivo semanal","10.000"]
     }))
     st.caption("Aplicación demostrativa. Las recomendaciones deben ser revisadas por Abastecimiento antes de cualquier decisión operativa.")
-
